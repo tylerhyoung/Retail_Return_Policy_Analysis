@@ -1,0 +1,241 @@
+---
+title: "Business Analytics Project"
+author: "Tyler Young"
+date: "11/12/2017"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+Background: A retail company changed it's return policy by reducing the number of days customers had to make a return from 90 to 45 dayas, and would like to understand the effects on sales and returns. The transaction data is from an entire year. The policy change occured halfway through the year and only affected certain stores. The variable polchange is 0 for the first half of the year and 1 for the second half. The variable studygrp is 0 if the store did not change their return policy and 1 if the policy is changed. Therefore we look for significance in the interaction term between polchange and studygrp to determine if the new policy has an effect.
+
+## read data
+```{r}
+storedata=read.csv("store attributes.csv")
+transactiondata=read.csv("Transactions and customer attributes.txt",sep="\t")
+```
+
+## define needed variables
+```{r}
+transactiondata$polchange=ifelse(transactiondata$month_index<51,0,1) #policy change dummy variable. Before Oct. 1 = 0, after Oct. 1 = 1
+transactiondata$studygrp=ifelse(transactiondata$store_number==10 | transactiondata$brand_number==8,0,1) #study group dummy variable. Sister brand = 0, all others = 1.
+transactiondata$return_amount=transactiondata$return*transactiondata$net_purchase_amount
+```
+
+## set up data frames
+```{r}
+onlinedata=subset(transactiondata,brand_number==1)
+physicaldata=subset(transactiondata,brand_number!=1)
+
+physicalagg <- aggregate(physicaldata[c("net_purchase_amount","return_amount")], by=list(physicaldata$store_number, physicaldata$month_index,physicaldata$brand_number), sum) #aggregate physical store data by store number and month.  Also include brand number because some stores show up in the transaction data but not in the store data, and we will need brand number later.
+colnames(physicalagg)[1] <- "store_number"
+colnames(physicalagg)[2] <- "month_index"
+colnames(physicalagg)[3] <- "brand_number"
+
+onlineagg <- aggregate(onlinedata[c("net_purchase_amount","return_amount")], by=list(onlinedata$store_number, onlinedata$day,onlinedata$month_index), sum) #aggregate online storedata by store number and day. Also include month index to merge with store data later.
+colnames(onlineagg)[1] <- "store_number"
+colnames(onlineagg)[2] <- "day"
+colnames(onlineagg)[3] <- "month_index"
+
+onlined2=merge(onlineagg,storedata,by=c("store_number","month_index"),all.x=TRUE)
+physicald2=merge(physicalagg,storedata,by=c("store_number","month_index"),all.x=TRUE)
+
+onlined2$polchange=ifelse(onlined2$month_index<51,0,1)
+onlined2$studygrp=ifelse(onlined2$store_number==10 | onlined2$Brand_number==8,0,1)
+physicald2$polchange=ifelse(physicald2$month_index<51,0,1)
+physicald2$studygrp=ifelse(physicald2$store_number==10 | physicald2$brand_number==8,0,1)
+
+
+temp=aggregate(transactiondata[c("polchange","studygrp")],by=list(transactiondata$customer_id),mean) #take average of each customers policy change variable and study group variable.
+colnames(temp)[1] <- "cust_id"
+tempsub=subset(temp,polchange!=0 & polchange!=1) #take subset of customers that shopped before AND after the policy change.
+x=subset(tempsub,studygrp==0 | studygrp==1) #Of the customers that shopped before and after the policy change, take the subset of customers that shopped exclusively at the sister brand or exclusively at non-sister brands
+q5 = transactiondata[transactiondata$customer_id %in% x$cust_id,] #Now that we have identified the customers we want for question 5, we limit the transaction data to these customers.
+custpurch = aggregate(q5[c("net_purchase_amount")], by=list(q5$customer_id, q5$polchange,q5$studygrp,q5$est_income_code,q5$gender,q5$age_band,q5$length_of_residence,q5$child),sum) #aggregate data by customer ID and policy change dummy variable. We include the other variables in case we need them for control variables in our model. We can do it this way because these extra variables only take one value for each customer, so they will not break up the data.
+colnames(custpurch)[1] = "customer_id"
+colnames(custpurch)[2] = "polchange"
+colnames(custpurch)[3] = "studygrp"
+colnames(custpurch)[4] = "est_income_code"
+colnames(custpurch)[5] = "gender"
+colnames(custpurch)[6] = "age_band"
+colnames(custpurch)[7] = "length_of_residence"
+colnames(custpurch)[8] = "child"
+
+
+mergedata=merge(transactiondata,storedata,by=c("store_number","month"),all.x=TRUE)
+
+#Use online2d for Q's 1&3, physical2d for Q's 2&4, custpurch for Q5, mergedata for Q6
+```
+
+## Question 1 - What is the impact of the change in the return policy on online sales
+```{r}
+hist(onlined2$net_purchase_amount)
+hist(log(onlined2$net_purchase_amount)) #log transformation is more normally distributed, so we will use this as our dependent variable.
+
+library(usdm)
+str(onlined2)
+summary(onlined2)
+df=data.frame(onlined2$store_number_of_skus,onlined2$studygrp,onlined2$polchange)
+cor(df)
+vif(df) #VIF scores all < 3. We had to remove variables such as month_index and store_average_price because they generated VIF scores > 3.
+model1=lm(log(net_purchase_amount+1)~studygrp*polchange+store_number_of_skus,data=onlined2)
+summary(model1) 
+#results indicate that the interaction term is insignificant, implying that the policy change has no significant impact on online store sales
+
+library(lmtest)
+library(sandwich)
+gqtest(model1)
+bptest(model1) #no heteroscedasticity in either test
+```
+
+## Question 2 - What is the impact of the change in the return policy on physical sales
+```{r}
+hist(physicald2$net_purchase_amount)
+hist(log(1 + physicald2$net_purchase_amount)) #again use log-transformed data
+
+#Checking Multi-collinearity
+#Multi-collinearity for both df less than 3
+library(usdm)
+str(physicald2)
+summary(physicald2)
+
+df=data.frame(physicald2$studygrp,physicald2$polchange,physicald2$store_number_of_skus,physicald2$sa_full_time,physicald2$sa_gender,physicald2$sa_avg_years_of_exp,physicald2$sa_married,physicald2$sa_dependent,physicald2$sales_volume_group)
+cor(df)
+vif(df) #all scores < 3. Continue with these variables.
+
+#OLS model
+model2 = lm(log(net_purchase_amount+1)~studygrp*polchange+store_number_of_skus+sa_full_time+sa_gender+sa_avg_years_of_exp+sa_married+sa_dependent+sales_volume_group, data = physicald2)
+summary(model2)
+#Interaction term is significant
+
+#Heteroskedasticity test. Significant p-values with bptest, hence heteroskedasticity.
+library(lmtest)
+gqtest(model2)
+bptest(model2)
+library(sandwich)
+library(foreign)
+coeftest(model2, vcov = vcovHC(model2, "HC1")) # they do not change the significance level of any variable.
+
+#From the interaction term, we conclude that physical stores who changed their policy from 90 to 45 days saw a reduction in sales by 6.89% due to the policy change.
+```
+
+## Question 3 - What is the impact of the change in the return policy on online returns
+```{r}
+## check colinearity for Q3 
+str(onlined2)
+summary(onlined2)
+#Dependent variable as return_amount
+df3=data.frame(onlined2$store_number_of_skus,onlined2$net_purchase_amount,onlined2$studygrp,onlined2$polchange)
+cor(df3)
+vif(df3) #all scores < 3 so we move forward.
+
+hist(onlined2$return_amount)
+hist(log(onlined2$return_amount+1)) #use log-transformation for return amount as well.
+
+model3=lm(log(onlined2$return_amount+1)~log(1+onlined2$net_purchase_amount)+onlined2$store_number_of_skus+onlined2$studygrp*polchange,data=onlined2)
+summary(model3)
+#interaction term is insignificant.It means policy change does not affect the online return. 
+
+gqtest(model3) # Goldfeld-Quandt test
+bptest(model3) #both are significant, indicating heteroskedasticity
+
+coeftest(model3, vcov = vcovHC(model3, "HC1")) #interaction term still insignificant
+```
+
+## Question 4 -What is the impact of the change in the return policy on physical returns
+```{r}
+library(usdm)
+
+df=data.frame(physicald2$net_purchase_amount,physicald2$studygrp,physicald2$polchange,physicald2$sa_avg_years_of_exp,physicald2$sa_dependent,physicald2$sa_avg_rate_of_pay,physicald2$sales_volume_group,physicald2$sa_gender)
+cor(df)
+vif(df) #all scores < 3.
+hist(log(physicald2$return_amount))
+
+model4=lm(log(physicald2$return_amount+1)~log(net_purchase_amount+1)+studygrp*polchange+sa_avg_years_of_exp+sa_dependent+sa_avg_rate_of_pay+sales_volume_group+sa_gender,data=physicald2)
+
+summary(model4) #interaction term appears significant, but need to check heteroscedasticity
+
+pred<-predict(model4) #obtain fitted values
+res=resid(model4) # obtain residuals
+plot(pred,res, ylab="Residuals", xlab="Fitted values") 
+#install.packages("lmtest")
+library(lmtest)
+
+gqtest(model4) # Goldfeld-Quandt test
+
+bptest(model4) # Breusch-Pagan test indicates heteroscedasticity
+
+#install.packages("sandwich")
+library(sandwich)
+library(foreign)
+coeftest(model4, vcov = vcovHC(model4, "HC1")) # they do not change the significance level of any variable.
+
+#From the interaction term, we conclude that physical stores who changed their policy from 90 to 45 days return saw a reduction in return amount of 42.5% due to the policy change.
+```
+
+
+## Question 5 -What is the impact of the change in the return policy on customer purchase behavior
+```{r}
+## check colinearity for Q5
+str(custpurch)
+summary(custpurch)
+
+
+df5=data.frame(custpurch$polchange,custpurch$studygrp,custpurch$est_income_code,custpurch$age_band,custpurch$length_of_residence)
+cor(df5)
+vif(df5) #all scores < 3.
+
+hist(custpurch$net_purchase_amount)
+hist(log(custpurch$net_purchase_amount+1))
+
+model5=lm(log(1+custpurch$net_purchase_amount)~custpurch$polchange*custpurch$studygrp+factor(custpurch$est_income_code)+factor(custpurch$age_band)+custpurch$length_of_residence,data=custpurch)
+summary(model5)
+#interaction term is significant. 
+
+# Goldfeld-Quandt test/Significant p-value heteroskedasticity present.
+#There is heteroskedasticity present
+gqtest(model5) 
+bptest(model5)
+
+coeftest(model5, vcov = vcovHC(model5, "HC1")) #interaction still significant
+#We conclude that changing the return policy from 90 to 45 days reduced the customer net  purchase amount by 17%
+```
+
+
+## Question 6 -What is the impact of the change in the return policy on customer return behavior
+```{r}
+library(aod)
+library(ggplot2)
+
+df=data.frame(mergedata$polchange,mergedata$studygrp,mergedata$net_purchase_amount, mergedata$est_income_code,mergedata$age_band)
+cor(df)
+vif(df) #all scores < 3
+
+probit1<- glm(return~polchange*studygrp+net_purchase_amount+est_income_code+age_band, data=mergedata, family=binomial(link="probit")) 
+summary(probit1) #all variables are significant
+
+with(probit1, null.deviance - deviance)
+with(probit1, df.null - df.residual)
+with(probit1, pchisq(null.deviance - deviance, df.null - df.residual, lower.tail = FALSE)) #significant p-value indicates good model fit
+
+pred = predict(probit1, data=mergedata,type = "response")
+
+return_prediction <- ifelse(pred >= 0.5,1,0) 
+misClasificError <- mean(return_prediction != mergedata$return) # count number of wrong classifications
+print(paste('Accuracy',1-misClasificError))
+
+gqtest(probit1) #significant
+bptest(probit1) #significant, we have heteroskedasticity
+
+library(mfx)
+
+probitmfx(formula=return~polchange*studygrp+net_purchase_amount+est_income_code+age_band, data=mergedata,robust=TRUE) 
+#the policy change decreases the probability of return by 3.29 percentage points.
+
+#run a logit model to make sure we get the same results
+logit1<- glm(return~polchange*studygrp+net_purchase_amount+est_income_code+age_band, data=mergedata, family="binomial")
+
+logitmfx(formula=return~polchange*studygrp+net_purchase_amount+est_income_code+age_band, data=mergedata,robust=TRUE)
+# probit and logit results are similar
+```
